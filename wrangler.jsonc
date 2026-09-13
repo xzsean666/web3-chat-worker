@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "web3-chat-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-02-24",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "FACTORY_ADDRESS": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "RPC_URLS": "http://127.0.0.1:8545",
+    "CHAIN_ID": "31337",
+    "RPC_CACHE_TTL_SECONDS": "60",
+    "MESSAGE_RECALL_WINDOW_SECONDS": "30"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "web3_chat_db",
+      "database_id": "be256d56-fc91-4e57-a57c-a0808238e617",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "VOICE_BUCKET",
+      "bucket_name": "web3-chat-voice"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  }
+}

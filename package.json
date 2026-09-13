@@ -1,0 +1,27 @@
+{
+  "name": "web3-chat-worker",
+  "version": "0.2.0",
+  "description": "Lightweight Cloudflare Worker Web3 Chat Node with EVM Smart Contract State, D1 Message Transit, R2 Media Storage, and Incremental Timestamp Sync",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:joint": "vitest run local-joint-test/joint.test.ts"
+  },
+  "dependencies": {
+    "@web3-chat/sdk": "file:../web3-chat-contract/sdk",
+    "hono": "^4.7.2",
+    "viem": "^2.23.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "@types/node": "^22.13.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.7",
+    "wrangler": "^4.31.0"
+  }
+}
