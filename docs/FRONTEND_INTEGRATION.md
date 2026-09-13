@@ -28,7 +28,8 @@
    - 用户身份、群组、角色（Owner, Admin, Member）、禁言/封禁、好友与黑名单存储于 **EVM 智能合约**（`web3-chat-contract`）。
    - Worker 节点通过 RPC 池与 TTL 缓存机制（`RPC_CACHE_TTL_SECONDS`）无缝查询链上状态，免除本地群组数据库同步维护。
    - 短暂消息传输、投递回执、会话 Session 存储在 **Cloudflare D1 (SQLite)**。
-   - 语音、图片、文件以及用户头像等二进制大对象存储在 **Cloudflare R2**。
+   - 语音、图片、文件存储在 **Cloudflare R2** 中仅作为**临时中转缓冲区（In-Transit Relay Buffer）**，接收方拉取/已读后定时物理销毁，实现服务端零多媒体留存。
+   - 用户头像优先采用智能合约链上 `metadata.avatar`（IPFS / Arweave / HTTPS），实现完全主权化与节点无关性。
 2. **Web3 身份标准**：
    - 用户身份由 EVM 钱包地址识别，系统内部强制小写标准化。
    - 登录鉴权采用 EIP-191 挑战-应答签名（SIWE 流程），一次一密，防止重放攻击。
@@ -36,9 +37,10 @@
    - 发送消息接口返回 `HTTP 201` **仅代表服务端收妥并入库（API Receipt）**。
    - 接收方客户端获取消息后，主动调用 `POST /messages/:id/ack`（状态转为 `delivered`）。
    - 用户查看消息后，主动调用 `POST /messages/:id/read`（状态转为 `read`）。
-4. **双重物理销毁与阅后即焚双轨模型 (Dual-Storage Burn-on-Read & Ephemeral Protocol)**：
-   - **私聊场景**：接收方触发已读后，开启 **30 秒倒计时销毁窗口**（发送方标记已读不会误触）。
-   - **群聊场景**：
+4. **多媒体中转“零留存”与双重物理销毁 (Zero-Retention Transit & Burn Protocol)**：
+   - **多媒体零持久留存**：接收方读完消息后宽限 30 秒（`MEDIA_TRANSIT_GRACE_SECONDS`），Sweeper 自动将 R2 中的语音/图片/文件物理删除。前端需在本地（IndexedDB/文件沙盒）持久化存储多媒体，用户切换 Worker 节点 0 媒体丢失。
+   - **私聊场景阅后即焚**：接收方触发已读后，开启 **30 秒倒计时销毁窗口**（发送方标记已读不会误触）。
+   - **群聊场景阅后即焚**：
      - **前端责任**：成员读完后，前端应从本地存储与 UI 中立即销毁/隐藏该消息（单人读后本地即焚）。
      - **服务端责任**：群内所有非发送者成员（`memberCount - 1`）均标记已读后，服务端才开启全服 30 秒倒计时彻底物理销毁。
      - **安全兜底**：若有群成员长期离线，超出 `EPHEMERAL_FALLBACK_TTL`（默认 7 天）后无论是否全员读完均自动被 Sweeper 清理，杜绝数据残留。
@@ -228,9 +230,20 @@ Authorization: Bearer <TOKEN>
 
 ---
 
-## 7. 模块五：多媒体消息与双重物理销毁 (Media, 30s Recall & Burn)
+## 7. 模块五：多媒体消息中转“零留存”协议与物理销毁 (Media, Transit Relay & 30s Recall)
 
-### 7.1 上传语音、图片与文件
+### 7.1 多媒体中转传输与前端本地缓存模式 (Client Local Storage Pattern)
+> [!IMPORTANT]
+> **Worker 节点不作为多媒体持久网盘！**
+> 云端 R2 仅作为消息传输中的临时中转缓冲区（In-Transit Relay Buffer）。为了保护用户极致隐私与降低服务端存储依赖：
+> 1. **上传与暂存**：发送方将多媒体文件上传至 Worker R2 存储桶。
+> 2. **拉取与本地固化**：接收方客户端收到消息或执行同步后，调用媒体下载端点，**前端必须立即将多媒体数据保存至本地持久化存储**（如浏览器的 IndexedDB / OPFS 或移动端 App 本地文件沙盒）。
+> 3. **已读与宽限期销毁**：接收方触发已读（Read ACK）后，服务端开启 30 秒宽限期（`MEDIA_TRANSIT_GRACE_SECONDS`，默认 30 秒）。宽限期一过，后台 Sweeper 将自动从 R2 中物理删除该多媒体二进制，并在 D1 中将消息内容置空。
+> 4. **兜底过期清理**：若接收方长时间未登录/未读，超出安全兜底 TTL（默认 7 天）后，Sweeper 亦会自动从 R2 中彻底清除中转二进制。
+> 5. **410 Gone 响应**：已被清除的媒体文件若再次请求流式端点，服务端将返回 `HTTP 410 Gone`（`{"error": "... binary was purged from transit relay"}`）。
+> 6. **节点迁移无感**：由于所有历史多媒体均由客户端本地自持，用户在未来随意更换 Worker 轻节点时，多媒体数据不会发生任何丢失！
+
+### 7.2 上传语音、图片与文件
 前端既支持在 `POST /conversations/:id/messages` 传 `multipart/form-data`，也支持使用专属快捷端点：
 - **语音上传**：`POST WORKER_BASE_URL/voice/upload`
   - 表单参数：`file`, `conversation_id`, `duration`, `retention`
@@ -239,26 +252,33 @@ Authorization: Bearer <TOKEN>
 - **文件上传**：`POST WORKER_BASE_URL/files/upload`
   - 表单参数：`file`, `conversation_id`, `retention`
 
-### 7.2 流式媒体下载与播放
+### 7.3 流式媒体下载与播放 (受中转宽限期约束)
 - 语音流：`GET WORKER_BASE_URL/voice/:messageId`
 - 图片流：`GET WORKER_BASE_URL/images/:messageId`
 - 文件流：`GET WORKER_BASE_URL/files/:messageId`（携带 `Content-Disposition` 附件头）
 - 通用对象流：`GET WORKER_BASE_URL/media/:key`
+> 若媒体二进制已从临时中转站销毁，上述接口统一返回 `HTTP 410 Gone`。
 
-### 7.3 30 秒消息撤回
+### 7.4 30 秒消息撤回
 - `POST WORKER_BASE_URL/messages/:id/recall`
   - 仅发送者可在 30 秒内撤回。
   - D1 消息内容置空，R2 对应的多媒体二进制文件**立即彻底删除**。
 
 ---
 
-## 8. 模块六：用户资料、唯一头像与社交关系 (Users & Social)
+## 8. 模块六：用户资料、主权头像与社交关系 (Users & Social)
 
-### 8.1 唯一头像系统 (R2)
-- 上传/覆盖头像：`POST WORKER_BASE_URL/users/me/avatar`
-  支持 `multipart/form-data`（key 为 `file` 或 `avatar`）或 JSON（`avatar_base64`）。
-- 直接流式展示头像：`GET WORKER_BASE_URL/users/:address/avatar`
-  支持浏览器 `<img src="WORKER_BASE_URL/users/0x.../avatar" />` 直接渲染并带 HTTP ETag 缓存。
+### 8.1 主权头像系统 (Sovereign Avatar Priority & R2 Fallback)
+1. **链上元数据优先**：
+   - 用户在 EVM 智能合约注册/设置的 profile metadata 中可包含 `avatar`（支持 `ipfs://...`, `arweave://...`, 或任意公网 HTTPS 图床 URL）。
+   - 调用 `GET WORKER_BASE_URL/users/:address` 获取用户信息时，后端**优先返回链上 `overview.metadata.avatar` 的直接 URL**。
+   - 这意味着用户的头像完全锚定在区块链与去中心化存储中，换任何 Worker 节点都能即时渲染，零数据绑定！
+2. **Worker 本地 R2 头像回退 (Fallback)**：
+   - 若用户尚未在链上配置 avatar URL，系统自动回退至 Worker 本地 R2 头像服务（`WORKER_BASE_URL/users/:address/avatar`）。
+   - 上传/覆盖 Worker 本地头像：`POST WORKER_BASE_URL/users/me/avatar`
+     支持 `multipart/form-data`（key 为 `file` 或 `avatar`）或 JSON（`avatar_base64`）。
+   - 直接流式展示头像：`GET WORKER_BASE_URL/users/:address/avatar`
+     支持浏览器 `<img src="WORKER_BASE_URL/users/0x.../avatar" />` 直接渲染并带 HTTP ETag 缓存。
 
 ### 8.2 链上社交查询
 - 获取链上好友列表：`GET WORKER_BASE_URL/social/friends?offset=0&limit=50`

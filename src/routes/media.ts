@@ -155,12 +155,12 @@ mediaRouter.get("/voice/:id", async (c) => {
     return c.json({ error: "Message expired and burned" }, 410);
   }
   if (!row.object_key) {
-    return c.json({ error: "Voice record not found" }, 404);
+    return c.json({ error: "Voice binary was purged from transit relay" }, 410);
   }
 
   const object = await c.env.VOICE_BUCKET.get(row.object_key);
   if (!object) {
-    return c.json({ error: "Voice binary not found in storage" }, 404);
+    return c.json({ error: "Voice binary was purged from transit relay" }, 410);
   }
 
   const headers = new Headers();
@@ -204,12 +204,12 @@ mediaRouter.get("/images/:id", async (c) => {
     return c.json({ error: "Message expired and burned" }, 410);
   }
   if (!row.object_key) {
-    return c.json({ error: "Image record not found" }, 404);
+    return c.json({ error: "Image binary was purged from transit relay" }, 410);
   }
 
   const object = await c.env.VOICE_BUCKET.get(row.object_key);
   if (!object) {
-    return c.json({ error: "Image binary not found in storage" }, 404);
+    return c.json({ error: "Image binary was purged from transit relay" }, 410);
   }
 
   const headers = new Headers();
@@ -254,12 +254,12 @@ mediaRouter.get("/files/:id", async (c) => {
     return c.json({ error: "Message expired and burned" }, 410);
   }
   if (!row.object_key) {
-    return c.json({ error: "File record not found" }, 404);
+    return c.json({ error: "File binary was purged from transit relay" }, 410);
   }
 
   const object = await c.env.VOICE_BUCKET.get(row.object_key);
   if (!object) {
-    return c.json({ error: "File binary not found in storage" }, 404);
+    return c.json({ error: "File binary was purged from transit relay" }, 410);
   }
 
   const headers = new Headers();

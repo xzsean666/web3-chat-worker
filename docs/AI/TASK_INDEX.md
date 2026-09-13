@@ -15,4 +15,6 @@
 | [TASK-011](tasks/TASK-011.md) | Production Hardening, README, Frontend Integration Guide & Build Verification | Complete README, updated frontend integration guide, build scripts, full verification | DONE | TASK-010 |
 | [TASK-012](tasks/TASK-012.md) | Local Live EVM Contract & Worker Cross-Project Joint Integration Testing | Live Anvil sandbox, real contract deployments, end-to-end multi-user joint verification across EVM contracts and Worker APIs | DONE | TASK-011 |
 | [TASK-013](tasks/TASK-013.md) | Full Security & Performance Audit, Optimization and Dual-Project Hardening | Comprehensive security & performance audit across EVM contracts and Worker APIs, eliminating N+1 DB queries, isolate-level TTL cache & SDK pooling, atomic batch sweeper, JOIN media streams, overflow defense | DONE | TASK-012 |
+| [TASK-014](tasks/TASK-014.md) | Group Chat on_read Dual-Lifecycle & Fallback Expiration Protocol Refinement | Explicit client vs server responsibilities, multi-party group read tally, fallback TTL expiration | DONE | TASK-013 |
+| [TASK-015](tasks/TASK-015.md) | Media Transit Zero-Retention Protocol & Sovereign On-Chain Avatar Priority | Zero-retention media transit relay in R2, post-read purge, 410 Gone streaming, on-chain sovereign avatar URL priority | DONE | TASK-014 |
 

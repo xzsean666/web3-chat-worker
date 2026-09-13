@@ -132,12 +132,13 @@ usersRouter.get("/users/:address", async (c) => {
   try {
     const overview = await contractService.getUserOverview(normalized);
     const hasAvatar = await UserService.getAvatar(c.env.VOICE_BUCKET, normalized);
+    const onChainAvatar = overview.metadata?.avatar || overview.metadata?.avatar_url || null;
 
     return c.json(
       serializeBigInt({
         user: {
           address: normalized,
-          avatar_url: hasAvatar ? `/users/${normalized.toLowerCase()}/avatar` : null,
+          avatar_url: onChainAvatar || (hasAvatar ? `/users/${normalized.toLowerCase()}/avatar` : null),
           status: overview.status,
           metadata: overview.metadata,
           metadataVersion: overview.metadataVersion,

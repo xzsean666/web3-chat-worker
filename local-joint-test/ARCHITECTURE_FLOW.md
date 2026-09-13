@@ -245,6 +245,68 @@ sequenceDiagram
 
 ---
 
+### 2.6 多媒体在途中转与消费即销毁架构 (Media In-Transit Relay & Zero-Retention Protocol)
+
+在去中心化主权通信体系中，**Worker 严守“轻量信使 / 中继管道（Relay Pipe）”定位，杜绝长期在云端沉淀用户的私人多媒体数据**：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (Sender)
+    actor Bob as Bob (Receiver)
+    participant Worker as web3-chat-worker (R2 In-Transit Buffer)
+    participant Sweeper as Sweeper Cron
+
+    Note over Alice,Worker: 1. Alice 发送图片/语音（仅在 R2 中继管道中临时暂存）
+    Alice->>Worker: POST /images/upload { file, conversation_id }
+    Worker-->>Alice: HTTP 201 { message: { status: "pending", content: "images/xxx.png" } }
+
+    Note over Bob,Worker: 2. Bob 客户端同步消息并拉取多媒体二进制流
+    Bob->>Worker: GET /images/:id
+    Worker-->>Bob: HTTP 200 (二进制图片流)
+    Note over Bob: Bob 客户端将图片持久化到本机本地数据库 (IndexedDB / SQLite / 本地沙箱)
+
+    Note over Bob,Worker: 3. Bob 标记已读 (已读确认 = 客户端消费完成)
+    Bob->>Worker: POST /messages/:id/read
+    Worker-->>Bob: HTTP 200 { status: "read" }
+
+    Note over Sweeper,Worker: 4. 消费宽限期（默认 30s，确保多端/慢网络下载完成）过后，Sweeper 物理抹除云端文件
+    Sweeper->>Worker: runSweeper()
+    Worker->>Worker: 从 R2 物理删除 images/xxx.png，清空 D1 content 字段
+    Note over Worker: 云端 R2 存储恢复 0 字节占用！
+
+    Note over Bob,Worker: 5. 再次访问已消费的云端流直接返回 410 Gone
+    Bob->>Worker: GET /images/:id
+    Worker-->>Bob: HTTP 410 { error: "Image binary was purged from transit relay" }
+    Note over Bob: Bob 前端继续从本机本地缓存秒级读取与渲染图片，聊天体验丝滑无阻
+```
+
+---
+
+### 2.7 链上主权头像 URL 优先协议 (Sovereign On-Chain Avatar Priority)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (User)
+    participant UserClone as Alice UserClone (EVM)
+    participant Worker as web3-chat-worker
+    actor Bob as Counterparty / Viewer
+
+    Note over Alice,UserClone: Alice 在链上存储元数据，其中包含去中心化头像 URL
+    Alice->>UserClone: setMetadata('{ "name": "Alice", "avatar": "ipfs://bafy.../avatar.png" }')
+    UserClone-->>Alice: TxReceipt
+
+    Note over Bob,Worker: 任意第三方通过 Worker 查询 Alice 公开资料
+    Bob->>Worker: GET /users/:aliceAddress
+    Worker->>UserClone: getUserOverview(aliceAddress)
+    Worker->>Worker: 优先提取 metadata.avatar，无需依赖任何中心化 Worker R2
+    Worker-->>Bob: HTTP 200 { user: { avatar_url: "ipfs://bafy.../avatar.png", ... } }
+    Note over Bob: 前端直接请求去中心化 IPFS/Arweave 网关渲染头像，更换 Worker 节点 0 丢失
+```
+
+---
+
 ## 3. 安全与性能审计及加固设计 (Security & Performance Architecture Hardening)
 
 经过双项目全面联合审计，针对链上合约协议与边缘计算节点实施了深度加固：
@@ -276,5 +338,10 @@ sequenceDiagram
    - 增设 `idx_nonces_wallet_nonce` 唯一复合索引与 `idx_messages_content` 索引，确保鉴权挑战与媒体反向寻址均为 O(1) 索引命中。
 9. **群聊阅后即焚全员已读销毁与兜底安全生命周期 (Group on_read Lifecycle & Fallback TTL)**：
    - 区分 1v1 私聊与多人群聊：私聊仅由接收方已读触发倒计时（发送方标记已读不误触）；群聊端侧各自已读各自本地立即销毁，服务端在全员（`memberCount - 1`）读毕后方启动 30 秒全局倒计时物理销毁；并引入 `EPHEMERAL_FALLBACK_TTL_SECONDS`（默认 7 天），防止离线成员造成数据长期驻留。
+10. **多媒体中继暂存与消费即销毁 (Media In-Transit Purge & Zero Cloud Retention)**：
+    - 多媒体文件在 Worker R2 中严格作为在途中转缓存。接收方下载并标记已读后，Sweeper 自动在宽限期后物理擦除云端二进制文件；若未读超过中继生命周期亦强制清除，杜绝云端隐私沉淀与存储膨胀。
+11. **链上主权头像 URL 优先穿透 (On-Chain Sovereign Avatar Penetration)**：
+    - 个人资料聚合接口优先返回用户 `UserClone` 合约中的 `metadata.avatar` 链上链接（如 IPFS / Arweave / 自定义 URL），使头像主权完全属于智能合约，更换或重启 Worker 实例头像零丢失。
+
 
 

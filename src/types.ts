@@ -7,6 +7,7 @@ export interface Env {
   RPC_CACHE_TTL_SECONDS?: string | number;
   MESSAGE_RECALL_WINDOW_SECONDS?: string | number;
   EPHEMERAL_FALLBACK_TTL_SECONDS?: string | number;
+  MEDIA_TRANSIT_GRACE_SECONDS?: string | number;
 }
 
 export type MessageType = 'text' | 'voice' | 'image' | 'file';

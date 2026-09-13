@@ -7,6 +7,7 @@ import { hashToken } from "../src/services/auth";
 import { ContractService } from "../src/services/contract";
 import { ConversationService } from "../src/services/conversation";
 import { Role, MemberStatus } from "@web3-chat/sdk";
+import { SweeperService } from "../src/services/sweeper";
 import type { Env } from "../src/types";
 
 describe("Group State Query & Dedicated Media API Routes (/groups, /voice, /images, /files)", () => {
@@ -261,6 +262,90 @@ describe("Group State Query & Dedicated Media API Routes (/groups, /voice, /imag
         env
       );
       expect(streamRes.status).toBe(410);
+    });
+
+    it("purges media binary from R2 once delivered/read and grace period has elapsed", async () => {
+      const imgBytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+      const file = new File([imgBytes], "transit.png", { type: "image/png" });
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("conversation_id", conversationId);
+
+      const uploadRes = await app.fetch(
+        new Request("http://localhost/images/upload", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${aliceToken}` },
+          body: formData,
+        }),
+        env
+      );
+      expect(uploadRes.status).toBe(201);
+      const { message } = (await uploadRes.json()) as any;
+      const objectKey = message.content;
+
+      // Verify accessible while pending in transit
+      const streamRes = await app.fetch(
+        new Request(`http://localhost/images/${message.id}`),
+        env
+      );
+      expect(streamRes.status).toBe(200);
+
+      // Receiver marks as read
+      const readRes = await app.fetch(
+        new Request(`http://localhost/messages/${message.id}/read`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${aliceToken}` },
+        }),
+        env
+      );
+      expect(readRes.status).toBe(200);
+
+      // Advance read_at past grace period (e.g. 35 seconds ago)
+      const now = Math.floor(Date.now() / 1000);
+      await env.DB.prepare("UPDATE messages SET read_at = ? WHERE id = ?")
+        .bind(now - 35, message.id)
+        .run();
+
+      // Sweeper runs and purges the binary
+      const report = await SweeperService.runSweeper(env);
+      expect(report.purged_media_count).toBeGreaterThanOrEqual(1);
+
+      // Now media streaming returns 410 (purged from transit relay)
+      const streamAfterPurge = await app.fetch(
+        new Request(`http://localhost/images/${message.id}`),
+        env
+      );
+      expect(streamAfterPurge.status).toBe(410);
+
+      // In R2, object is gone
+      const r2Object = await env.VOICE_BUCKET.get(objectKey);
+      expect(r2Object).toBeNull();
+    });
+
+    it("prioritizes on-chain metadata avatar URL over local R2 avatar", async () => {
+      vi.spyOn(ContractService.prototype, "getUserOverview").mockResolvedValueOnce({
+        userAddress: alice.address as `0x${string}`,
+        cloneAddress: "0x1111111111111111111111111111111111111111" as `0x${string}`,
+        status: 0 as any,
+        metadataVersion: 1,
+        metadata: {
+          name: "Alice",
+          avatar: "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+        },
+        stateVersion: 1,
+        state: {},
+        friendCount: 0n,
+        groupCount: 0n,
+      });
+
+      const res = await app.fetch(
+        new Request(`http://localhost/users/${alice.address}`),
+        env
+      );
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as any;
+      expect(data.user.avatar_url).toBe("ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
     });
   });
 });

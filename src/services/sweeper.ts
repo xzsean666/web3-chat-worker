@@ -60,6 +60,52 @@ export class SweeperService {
       await env.DB.batch(deleteStmts);
     }
 
+    // 2. In-Transit Media Relay Purge (中继消费即焚 - 接收方拉取/已读后释放 R2 存储)
+    // Media files are in-transit buffers. Once delivered/read and the grace window has passed
+    // (read_at > 0 AND read_at <= mediaReadCutoff), OR unread media fallback TTL passed (created_at <= fallbackCutoff):
+    // The heavy binary in R2 is purged, and media metadata is cleared to guarantee zero cloud storage retention.
+    const mediaGraceSeconds = Number(env.MEDIA_TRANSIT_GRACE_SECONDS) || 30;
+    const mediaReadCutoff = now - mediaGraceSeconds;
+
+    const consumedMediaMessages = await env.DB.prepare(
+      `SELECT * FROM messages
+       WHERE type IN ('voice', 'image', 'file')
+         AND content IS NOT NULL
+         AND (
+           (read_at > 0 AND read_at <= ?)
+           OR (created_at <= ?)
+         )`
+    )
+      .bind(mediaReadCutoff, fallbackCutoff)
+      .all<MessageRow>();
+
+    const consumedList = consumedMediaMessages.results || [];
+    const mediaStmts: any[] = [];
+
+    for (const msg of consumedList) {
+      // Don't re-process if already swept in expiredList
+      if (expiredList.some((e) => e.id === msg.id)) continue;
+
+      if (msg.content) {
+        try {
+          await env.VOICE_BUCKET.delete(msg.content);
+          mediaPurgeCount++;
+        } catch {
+          // Ignore if already deleted
+        }
+      }
+      mediaStmts.push(
+        env.DB.prepare(`UPDATE messages SET content = NULL WHERE id = ?`).bind(msg.id),
+        env.DB.prepare(`DELETE FROM voice_messages WHERE message_id = ?`).bind(msg.id),
+        env.DB.prepare(`DELETE FROM image_messages WHERE message_id = ?`).bind(msg.id),
+        env.DB.prepare(`DELETE FROM file_messages WHERE message_id = ?`).bind(msg.id)
+      );
+    }
+
+    if (mediaStmts.length > 0) {
+      await env.DB.batch(mediaStmts);
+    }
+
     // 2. Purge expired nonces
     const nonceResult = await env.DB.prepare(
       `DELETE FROM nonces WHERE expires_at <= ?`
