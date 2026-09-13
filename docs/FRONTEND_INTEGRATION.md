@@ -36,9 +36,13 @@
    - 发送消息接口返回 `HTTP 201` **仅代表服务端收妥并入库（API Receipt）**。
    - 接收方客户端获取消息后，主动调用 `POST /messages/:id/ack`（状态转为 `delivered`）。
    - 用户查看消息后，主动调用 `POST /messages/:id/read`（状态转为 `read`）。
-4. **双重物理销毁 (Dual-Storage Burn-on-Read)**：
-   - 阅后即焚（`retention: "on_read"`）消息在被接收方触发已读后，开启 **30 秒倒计时销毁窗口**。
-   - 窗口期后，消息从 D1 和 R2 中彻底物理抹除。
+4. **双重物理销毁与阅后即焚双轨模型 (Dual-Storage Burn-on-Read & Ephemeral Protocol)**：
+   - **私聊场景**：接收方触发已读后，开启 **30 秒倒计时销毁窗口**（发送方标记已读不会误触）。
+   - **群聊场景**：
+     - **前端责任**：成员读完后，前端应从本地存储与 UI 中立即销毁/隐藏该消息（单人读后本地即焚）。
+     - **服务端责任**：群内所有非发送者成员（`memberCount - 1`）均标记已读后，服务端才开启全服 30 秒倒计时彻底物理销毁。
+     - **安全兜底**：若有群成员长期离线，超出 `EPHEMERAL_FALLBACK_TTL`（默认 7 天）后无论是否全员读完均自动被 Sweeper 清理，杜绝数据残留。
+   - 销毁窗口到期后，由后台 Sweeper 从 D1 SQLite 和 R2 存储桶中双向物理抹除。
 5. **30 秒消息撤回 (Message Recall)**：
    - 发送者可在 30 秒内撤回消息，服务端清空文本并**立即从 R2 物理删除多媒体文件**。
 
@@ -214,7 +218,9 @@ Authorization: Bearer <TOKEN>
     "message_ids": ["msg-1", "msg-2"]
   }
   ```
-  > 对于 `retention: "on_read"` 消息，调用已读确认后将启动 30 秒倒计时销毁！
+  > **阅后即焚说明**：对于 `retention: "on_read"` 消息：
+  > - 私聊：接收方已读后开启 30 秒倒计时销毁窗口；
+  > - 群聊：用户读完后前端在本地存储中抹除该消息；服务端待全群所有成员均已读（或超出 7 天兜底 TTL）后开启 30 秒全局物理销毁！
 
 ### 6.3 查询消息回执统计
 - `GET WORKER_BASE_URL/messages/:id/receipts`

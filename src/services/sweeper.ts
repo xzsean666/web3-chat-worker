@@ -15,12 +15,18 @@ export class SweeperService {
    */
   public static async runSweeper(env: Env): Promise<SweeperReport> {
     const now = Math.floor(Date.now() / 1000);
+    const fallbackTtl = Number(env.EPHEMERAL_FALLBACK_TTL_SECONDS) || 7 * 86400;
+    const fallbackCutoff = now - fallbackTtl;
 
-    // 1. Find expired messages
+    // 1. Find expired messages:
+    // - Active countdown finished: expires_at > 0 AND expires_at <= now
+    // - Fallback TTL reached for unread/incompletely-read ephemeral messages: retention = 'on_read' AND expires_at = 0 AND created_at <= fallbackCutoff
     const expiredMessages = await env.DB.prepare(
-      `SELECT * FROM messages WHERE expires_at > 0 AND expires_at <= ?`
+      `SELECT * FROM messages
+       WHERE (expires_at > 0 AND expires_at <= ?)
+          OR (retention = 'on_read' AND expires_at = 0 AND created_at <= ?)`
     )
-      .bind(now)
+      .bind(now, fallbackCutoff)
       .all<MessageRow>();
 
     const expiredList = expiredMessages.results || [];

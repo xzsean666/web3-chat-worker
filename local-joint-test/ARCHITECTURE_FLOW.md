@@ -199,6 +199,52 @@ sequenceDiagram
 
 ---
 
+### 2.5 阅后即焚 (on_read) 双轨生命周期：私聊 vs 群聊全员已读销毁与兜底过期协议
+
+在点对点私聊与多人群聊场景下，阅后即焚（`retention: "on_read"`）具备严谨的差异化生命周期逻辑，兼顾区块链轻节点架构、前端体验与物理级数据隐私：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Alice (Sender)
+    actor Bob as Bob (Member 1)
+    actor Charlie as Charlie (Member 2)
+    participant Worker as web3-chat-worker (D1 + R2)
+    participant Group as GroupClone (EVM)
+    participant Sweeper as Sweeper Cron
+
+    Note over Alice,Worker: 1. Alice 在群内发送 on_read 阅后即焚消息 (群总成员数 = 3)
+    Alice->>Worker: POST /conversations/group:1/messages { retention: "on_read", burn_after_seconds: 30 }
+    Worker-->>Alice: HTTP 201 { message: { status: "pending", expires_at: 0 } }
+
+    Note over Bob,Worker: 2. Bob 客户端读到消息 -> 前端本地立即销毁，向服务端提交已读回执
+    Bob->>Worker: POST /messages/:id/read
+    Worker->>Group: getGroupOverview(1) -> memberCount = 3
+    Note over Worker: 目标已读数 = 3 - 1 = 2人。当前非发送者已读数 = 1 (Bob)。未达到全员已读！
+    Worker-->>Bob: HTTP 200 { status: "read", expires_at: 0 }
+    Note over Bob: Bob 前端从本地缓存彻底擦除该消息（靠前端单人即时销毁）
+
+    Note over Charlie,Worker: 3. Charlie 稍后上线并拉取同步 -> 消息依然存在于服务端
+    Charlie->>Worker: GET /sync?since=...
+    Worker-->>Charlie: HTTP 200 { messages: [on_read消息] }
+
+    Note over Charlie,Worker: 4. Charlie 查看消息 -> 前端本地销毁，向服务端提交已读回执
+    Charlie->>Worker: POST /messages/:id/read
+    Note over Worker: 当前非发送者已读数 = 2 (Bob, Charlie) >= 目标已读数 (2)。全员已读达成！
+    Worker->>Worker: 启动全服物理销毁倒计时：expires_at = now + 30
+    Worker-->>Charlie: HTTP 200 { status: "read", expires_at: now + 30 }
+    Note over Charlie: Charlie 前端从本地缓存彻底擦除该消息
+
+    Note over Sweeper,Worker: 5. 30 秒倒计时结束，Sweeper 触发物理清除
+    Sweeper->>Worker: runSweeper()
+    Worker->>Worker: 从 D1 批量物理删除 messages, message_receipts 与 R2 多媒体文件
+
+    Note over Alice,Sweeper: [兜底机制] 若某成员长期失联/离线，达到 EPHEMERAL_FALLBACK_TTL (默认 7 天)
+    Note over Sweeper: 无论是否全员已读，Sweeper 强制物理销毁，杜绝数据永久滞留
+```
+
+---
+
 ## 3. 安全与性能审计及加固设计 (Security & Performance Architecture Hardening)
 
 经过双项目全面联合审计，针对链上合约协议与边缘计算节点实施了深度加固：
@@ -228,4 +274,7 @@ sequenceDiagram
    - 鉴权校验中加入 `deleteResult.meta.changes > 0` 严格核验，防止并发竞争条件下同一 Nonce 被多次利用。
 8. **D1 SQLite 复合索引优化**：
    - 增设 `idx_nonces_wallet_nonce` 唯一复合索引与 `idx_messages_content` 索引，确保鉴权挑战与媒体反向寻址均为 O(1) 索引命中。
+9. **群聊阅后即焚全员已读销毁与兜底安全生命周期 (Group on_read Lifecycle & Fallback TTL)**：
+   - 区分 1v1 私聊与多人群聊：私聊仅由接收方已读触发倒计时（发送方标记已读不误触）；群聊端侧各自已读各自本地立即销毁，服务端在全员（`memberCount - 1`）读毕后方启动 30 秒全局倒计时物理销毁；并引入 `EPHEMERAL_FALLBACK_TTL_SECONDS`（默认 7 天），防止离线成员造成数据长期驻留。
+
 

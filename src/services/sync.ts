@@ -54,12 +54,16 @@ export class SyncService {
       conversationCondition = dmClause;
     }
 
+    const fallbackTtl = Number(env.EPHEMERAL_FALLBACK_TTL_SECONDS) || 7 * 86400;
+    const fallbackCutoff = now - fallbackTtl;
+
     // 3. Query messages matching update timestamps and not expired/burned
     const messageSql = `
       SELECT * FROM messages
       WHERE ${conversationCondition}
         AND (created_at > ? OR recalled_at > ? OR delivered_at > ? OR read_at > ?)
         AND (expires_at = 0 OR expires_at > ?)
+        AND NOT (retention = 'on_read' AND expires_at = 0 AND created_at <= ?)
       ORDER BY created_at ASC
       LIMIT ?
     `;
@@ -71,6 +75,7 @@ export class SyncService {
       since,
       since,
       now,
+      fallbackCutoff,
       limit,
     ];
 

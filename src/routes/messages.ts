@@ -34,7 +34,9 @@ messagesRouter.get("/media/*", async (c) => {
   }
 
   const now = Math.floor(Date.now() / 1000);
-  if (message.expires_at > 0 && message.expires_at <= now) {
+  const fallbackTtl = Number(c.env.EPHEMERAL_FALLBACK_TTL_SECONDS) || 7 * 86400;
+  const isFallbackExpired = message.retention === "on_read" && message.expires_at === 0 && message.created_at <= (now - fallbackTtl);
+  if ((message.expires_at > 0 && message.expires_at <= now) || isFallbackExpired) {
     return c.json({ error: "Media expired and burned" }, 410);
   }
 

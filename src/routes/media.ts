@@ -123,38 +123,11 @@ mediaRouter.post("/files/upload", async (c) => {
   }
 });
 
-// --- Stream Endpoints ---
-
-async function checkMessageBurnStatus(
-  db: D1Database,
-  messageId: string
-): Promise<{ ok: boolean; status?: number; error?: string }> {
-  const message = await db
-    .prepare(`SELECT recalled_at, expires_at FROM messages WHERE id = ? LIMIT 1`)
-    .bind(messageId)
-    .first<MessageRow>();
-
-  if (!message) {
-    return { ok: false, status: 404, error: "Message not found" };
-  }
-
-  if (message.recalled_at) {
-    return { ok: false, status: 410, error: "Message was recalled" };
-  }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (message.expires_at > 0 && message.expires_at <= now) {
-    return { ok: false, status: 410, error: "Message expired and burned" };
-  }
-
-  return { ok: true };
-}
-
 mediaRouter.get("/voice/:id", async (c) => {
   const messageId = c.req.param("id");
 
   const row = await c.env.DB.prepare(
-    `SELECT m.recalled_at, m.expires_at, v.object_key, v.mime_type
+    `SELECT m.recalled_at, m.expires_at, m.retention, m.created_at, v.object_key, v.mime_type
      FROM messages m
      LEFT JOIN voice_messages v ON v.message_id = m.id
      WHERE m.id = ? LIMIT 1`
@@ -163,6 +136,8 @@ mediaRouter.get("/voice/:id", async (c) => {
     .first<{
       recalled_at: number | null;
       expires_at: number;
+      retention: string;
+      created_at: number;
       object_key: string | null;
       mime_type: string | null;
     }>();
@@ -174,7 +149,9 @@ mediaRouter.get("/voice/:id", async (c) => {
     return c.json({ error: "Message was recalled" }, 410);
   }
   const now = Math.floor(Date.now() / 1000);
-  if (row.expires_at > 0 && row.expires_at <= now) {
+  const fallbackTtl = Number(c.env.EPHEMERAL_FALLBACK_TTL_SECONDS) || 7 * 86400;
+  const isFallbackExpired = row.retention === "on_read" && row.expires_at === 0 && row.created_at <= (now - fallbackTtl);
+  if ((row.expires_at > 0 && row.expires_at <= now) || isFallbackExpired) {
     return c.json({ error: "Message expired and burned" }, 410);
   }
   if (!row.object_key) {
@@ -199,7 +176,7 @@ mediaRouter.get("/images/:id", async (c) => {
   const messageId = c.req.param("id");
 
   const row = await c.env.DB.prepare(
-    `SELECT m.recalled_at, m.expires_at, i.object_key, i.mime_type
+    `SELECT m.recalled_at, m.expires_at, m.retention, m.created_at, i.object_key, i.mime_type
      FROM messages m
      LEFT JOIN image_messages i ON i.message_id = m.id
      WHERE m.id = ? LIMIT 1`
@@ -208,6 +185,8 @@ mediaRouter.get("/images/:id", async (c) => {
     .first<{
       recalled_at: number | null;
       expires_at: number;
+      retention: string;
+      created_at: number;
       object_key: string | null;
       mime_type: string | null;
     }>();
@@ -219,7 +198,9 @@ mediaRouter.get("/images/:id", async (c) => {
     return c.json({ error: "Message was recalled" }, 410);
   }
   const now = Math.floor(Date.now() / 1000);
-  if (row.expires_at > 0 && row.expires_at <= now) {
+  const fallbackTtl = Number(c.env.EPHEMERAL_FALLBACK_TTL_SECONDS) || 7 * 86400;
+  const isFallbackExpired = row.retention === "on_read" && row.expires_at === 0 && row.created_at <= (now - fallbackTtl);
+  if ((row.expires_at > 0 && row.expires_at <= now) || isFallbackExpired) {
     return c.json({ error: "Message expired and burned" }, 410);
   }
   if (!row.object_key) {
@@ -244,7 +225,7 @@ mediaRouter.get("/files/:id", async (c) => {
   const messageId = c.req.param("id");
 
   const row = await c.env.DB.prepare(
-    `SELECT m.recalled_at, m.expires_at, f.object_key, f.file_name, f.mime_type
+    `SELECT m.recalled_at, m.expires_at, m.retention, m.created_at, f.object_key, f.file_name, f.mime_type
      FROM messages m
      LEFT JOIN file_messages f ON f.message_id = m.id
      WHERE m.id = ? LIMIT 1`
@@ -253,6 +234,8 @@ mediaRouter.get("/files/:id", async (c) => {
     .first<{
       recalled_at: number | null;
       expires_at: number;
+      retention: string;
+      created_at: number;
       object_key: string | null;
       file_name: string | null;
       mime_type: string | null;
@@ -265,7 +248,9 @@ mediaRouter.get("/files/:id", async (c) => {
     return c.json({ error: "Message was recalled" }, 410);
   }
   const now = Math.floor(Date.now() / 1000);
-  if (row.expires_at > 0 && row.expires_at <= now) {
+  const fallbackTtl = Number(c.env.EPHEMERAL_FALLBACK_TTL_SECONDS) || 7 * 86400;
+  const isFallbackExpired = row.retention === "on_read" && row.expires_at === 0 && row.created_at <= (now - fallbackTtl);
+  if ((row.expires_at > 0 && row.expires_at <= now) || isFallbackExpired) {
     return c.json({ error: "Message expired and burned" }, 410);
   }
   if (!row.object_key) {

@@ -267,6 +267,7 @@ export class MessageService {
     userId: string
   ): Promise<MessageRow> {
     const now = Math.floor(Date.now() / 1000);
+    const normUser = userId.toLowerCase();
 
     const message = await env.DB.prepare(`SELECT * FROM messages WHERE id = ?`).bind(messageId).first<MessageRow>();
     if (!message) {
@@ -284,19 +285,30 @@ export class MessageService {
       message.delivered_at = now;
     }
 
-    // Insert receipt
-    await env.DB.prepare(
-      `INSERT INTO message_receipts (id, message_id, user_id, status, timestamp)
-       VALUES (?, ?, ?, 'delivered', ?)`
+    // Idempotent delivery receipt
+    const existingReceipt = await env.DB.prepare(
+      `SELECT id FROM message_receipts WHERE message_id = ? AND user_id = ? AND status = 'delivered' LIMIT 1`
     )
-      .bind(crypto.randomUUID(), messageId, userId.toLowerCase(), now)
-      .run();
+      .bind(messageId, normUser)
+      .first();
+
+    if (!existingReceipt) {
+      await env.DB.prepare(
+        `INSERT INTO message_receipts (id, message_id, user_id, status, timestamp)
+         VALUES (?, ?, ?, 'delivered', ?)`
+      )
+        .bind(crypto.randomUUID(), messageId, normUser, now)
+        .run();
+    }
 
     return message;
   }
 
   /**
-   * Explicit read acknowledgment from client. Starts 30s burn window if on_read.
+   * Explicit read acknowledgment from client.
+   * - In 1-on-1 DM: Starts burn countdown when counterparty reads.
+   * - In Group chat: Client deletes locally on read. Server starts burn countdown only when
+   *   ALL non-sender members have read, or fallback expiration TTL is reached.
    */
   public static async markAsRead(
     env: Env,
@@ -304,16 +316,78 @@ export class MessageService {
     userId: string
   ): Promise<MessageRow> {
     const now = Math.floor(Date.now() / 1000);
+    const normUser = userId.toLowerCase();
 
     const message = await env.DB.prepare(`SELECT * FROM messages WHERE id = ?`).bind(messageId).first<MessageRow>();
     if (!message) {
       throw new Error("Message not found");
     }
 
+    const isSender = normUser === message.sender_id.toLowerCase();
+    const isGroup = message.conversation_id.startsWith("group:");
+
+    // 1. Idempotent insert of read receipt
+    const existingReceipt = await env.DB.prepare(
+      `SELECT id FROM message_receipts WHERE message_id = ? AND user_id = ? AND status = 'read' LIMIT 1`
+    )
+      .bind(messageId, normUser)
+      .first();
+
+    if (!existingReceipt) {
+      await env.DB.prepare(
+        `INSERT INTO message_receipts (id, message_id, user_id, status, timestamp)
+         VALUES (?, ?, ?, 'read', ?)`
+      )
+        .bind(crypto.randomUUID(), messageId, normUser, now)
+        .run();
+    }
+
+    // 2. Determine expires_at for on_read retention
     let expiresAt = message.expires_at;
+
     if (message.retention === "on_read" && (message.expires_at === 0 || message.expires_at === null)) {
-      const burnWindow = message.burn_after_seconds || 30;
-      expiresAt = now + burnWindow;
+      if (!isGroup) {
+        // Direct conversation (1-on-1):
+        // Recipient reading activates the 30s burn countdown window.
+        // Sender reading their own message does not trigger burn.
+        if (!isSender) {
+          const burnWindow = message.burn_after_seconds || 30;
+          expiresAt = now + burnWindow;
+        }
+      } else {
+        // Group conversation:
+        // Client deletes locally after reading ("靠前端删除自己读的").
+        // Global message destruction is activated ONLY when all non-sender members have read
+        // OR fallback expiration TTL is reached.
+        const contractService = new ContractService(env);
+        const parsed = ConversationService.parseConversationId(message.conversation_id);
+        let memberCount = 0;
+        if (parsed.groupId !== undefined) {
+          try {
+            const overview = await contractService.getGroupOverview(parsed.groupId);
+            memberCount = Number(overview.memberCount);
+          } catch {
+            // RPC fallback: if contract call fails, preserve message without premature destruction
+          }
+        }
+
+        const targetReaders = Math.max(1, memberCount - 1);
+        const readCountResult = await env.DB.prepare(
+          `SELECT COUNT(DISTINCT user_id) as total_readers
+           FROM message_receipts
+           WHERE message_id = ? AND status = 'read' AND user_id != ?`
+        )
+          .bind(messageId, message.sender_id.toLowerCase())
+          .first<{ total_readers: number }>();
+
+        const distinctReaders = readCountResult?.total_readers || 0;
+
+        if (memberCount > 0 && distinctReaders >= targetReaders) {
+          // All non-sender members have read -> start global 30-second burn countdown
+          const burnWindow = message.burn_after_seconds || 30;
+          expiresAt = now + burnWindow;
+        }
+      }
     }
 
     await env.DB.prepare(
@@ -331,14 +405,6 @@ export class MessageService {
     message.read_at = message.read_at || now;
     message.delivered_at = message.delivered_at || now;
     message.expires_at = expiresAt;
-
-    // Insert receipt
-    await env.DB.prepare(
-      `INSERT INTO message_receipts (id, message_id, user_id, status, timestamp)
-       VALUES (?, ?, ?, 'read', ?)`
-    )
-      .bind(crypto.randomUUID(), messageId, userId.toLowerCase(), now)
-      .run();
 
     return message;
   }
@@ -401,13 +467,16 @@ export class MessageService {
     before?: number
   ): Promise<EnrichedMessage[]> {
     const now = Math.floor(Date.now() / 1000);
+    const fallbackTtl = Number(env.EPHEMERAL_FALLBACK_TTL_SECONDS) || 7 * 86400;
+    const fallbackCutoff = now - fallbackTtl;
 
     let query = `
       SELECT * FROM messages
       WHERE conversation_id = ?
         AND (expires_at = 0 OR expires_at > ?)
+        AND NOT (retention = 'on_read' AND expires_at = 0 AND created_at <= ?)
     `;
-    const params: any[] = [conversationId, now];
+    const params: any[] = [conversationId, now, fallbackCutoff];
 
     if (before) {
       query += ` AND created_at < ?`;
