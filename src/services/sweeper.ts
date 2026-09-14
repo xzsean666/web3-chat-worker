@@ -84,7 +84,7 @@ export class SweeperService {
 
     for (const msg of consumedList) {
       // Don't re-process if already swept in expiredList
-      if (expiredList.some((e) => e.id === msg.id)) continue;
+      if (expiredList.some((e: MessageRow) => e.id === msg.id)) continue;
 
       if (msg.content) {
         try {

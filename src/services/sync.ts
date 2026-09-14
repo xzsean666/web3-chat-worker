@@ -7,6 +7,7 @@ import { MessageService, type EnrichedMessage } from "./message";
 export interface SyncResult {
   messages: EnrichedMessage[];
   receipts: MessageReceiptRow[];
+  recalls: Array<{ id: string; recalled_at: number }>;
   groups: string[];
   sync_timestamp: number;
   has_more?: boolean;
@@ -118,11 +119,17 @@ export class SyncService {
       syncTimestamp = maxTs;
     }
 
+    const recalls = messages
+      .filter((m) => m.recalled_at !== null && m.recalled_at !== undefined && Number(m.recalled_at) > 0)
+      .map((m) => ({ id: m.id, recalled_at: Number(m.recalled_at) }));
+
     return serializeBigInt({
       messages: enriched,
       receipts,
+      recalls,
       groups: groupConversationIds,
       sync_timestamp: syncTimestamp,
+      last_timestamp: syncTimestamp,
       has_more: messages.length >= limit,
     });
   }
